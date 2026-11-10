@@ -1,0 +1,169 @@
+---
+title: "08_diamonds"
+author: "Samuele Antonello 162640"
+date: "2026-11-09"
+output: 
+  prettydoc::html_pretty:
+    theme: architect
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+In questa data challenge andremo ad analizzare il dataset *diamonds*, in particolare il rapporto che si viene a creare tra il prezzo di un diamante e le sue qualità (ovvero taglio, colore e chiarezza).
+Osserviamo che i diamanti di bassa qualità sono anche quelli che costano di più, come si può spiegare questo apparente paradosso? 
+```{r}
+library(dplyr)
+library(ggplot2)
+library(modelr)
+```
+Ricordiamoci che:
+
+- Il taglio migliore è *ideal*, il peggiore è *fair*;
+- Il colore migliore è *D*, il peggiore è *J*;
+- La chiarezza migliore è *IF*, la peggiore è *I1*.
+Vediamo il paradosso:
+```{r}
+ggplot(diamonds, aes(cut,price)) + geom_boxplot()
+ggplot(diamonds, aes(color, price)) + geom_boxplot()
+ggplot(diamonds, aes(clarity, price)) + geom_boxplot()
+```
+In tutti e tre i grafici il prezzo sembra *diminuire* al migliorare della qualità: i diamanti con cut Fair, colore J e clarity I1 hanno prezzi mediani più alti di quelli con cut Ideal, colore D e clarity IF. È controintuitivo: ci aspetteremmo l'opposto. Il confronto però non tiene conto di altre variabili che potrebbero differire tra i gruppi, prima fra tutte il peso (`carat`).
+
+
+```{r carat-vs-price}
+ggplot(diamonds, aes(carat, price)) + 
+  geom_hex(bins=50)
+```
+Notiamo che il prezzo cresce fortemente con il carato, e la relazione non è lineare: il prezzo sale più che proporzionalmente al peso. Il carato è quindi un determinante fondamentale del prezzo.
+
+Ora analizziamo le tre specifiche di qualità (taglio, colore e chiarezza) in relazione al carato del diamante:
+```{r}
+ggplot(diamonds, aes(cut, carat)) + geom_boxplot()
+ggplot(diamonds, aes(color, carat)) + geom_boxplot()
+ggplot(diamonds, aes(clarity, carat)) + geom_boxplot()
+```
+I diamanti di qualità peggiore sono mediamente più pesanti: il carato mediano è più alto per cut Fair, colore J e clarity I1, e più basso per Ideal, D e IF. Questa è la chiave del paradosso: la qualità è associata negativamente al carato, e il carato è associato positivamente al prezzo. Il carato è quindi una variabile confondente.
+
+### Modello: prezzo in funzione del carato
+
+La relazione prezzo-carato non è lineare, ma lo diventa in scala logaritmica. Uso `log2` così che un incremento di 1 corrisponda a un raddoppio:
+
+```{r}
+diamonds2 <- diamonds |>
+  mutate(lprice = log2(price),
+         lcarat = log2(carat))
+
+ggplot(diamonds2, aes(lcarat, lprice)) + geom_hex(bins = 50)
+```
+In scala log-log la nuvola di punti diventa approssimativamente lineare, quindi un modello lineare su `log2(price) ~ log2(carat)` è appropriato. Una relazione lineare in scala log corrisponde a una legge di potenza sulla scala originale.
+
+```{r}
+mod_carat <- lm(lprice ~ lcarat, data = diamonds2)
+
+summary(mod_carat)
+```
+
+Vediamo come questo modello si adatta ai nostri dati:
+
+```{r}
+a = mod_carat$coefficients[1]
+b = mod_carat$coefficients[2]
+
+ggplot(diamonds, aes(carat, price))+
+  geom_hex(bins = 50)+
+  scale_x_continuous(trans = "log2")+
+  scale_y_continuous(trans = "log2")+
+  geom_abline(intercept = a,
+              slope = b,
+              colour = "lightgreen",
+              linewidth = 1)
+  
+```
+
+Si osserva che la retta prevista dal modello segue bene l'andamento dei dati. Il modello cattura la componente di prezzo spiegata dal solo peso. Ciò che resta, cioè i residui che è il prezzo "a parità di carato".
+
+### Residui:
+
+Ora verifichiamo come si comportano i residui del modello:
+
+```{r}
+diamonds2 <- diamonds2 |>
+  add_residuals(mod_carat, "lresid")
+
+ggplot(diamonds2, aes(x = lcarat, y = lresid)) +
+  geom_hex(bins = 50) +
+  geom_ref_line(h = 0, colour = "red") +
+  labs(
+    title = "Analisi dei residui del prezzo dei diamanti",
+    subtitle = "Differenza tra log2(prezzo) osservato e previsione del modello lineare",
+    x = "log2(carat)",
+    y = "Residuo (log2 del prezzo)"
+  ) +
+  theme_minimal()
+```
+Si può notare che i residui sono centrati su zero e non dipendono più dal carato: il modello ha rimosso l'effetto del peso (un residuo di 1 in scala log2 vale un prezzo doppio).
+
+Vediamo ora il comportamento dei residui in funzione della qualità del diamante:
+
+```{r}
+ggplot(diamonds2, aes(x = cut, y = lresid)) +
+  geom_boxplot() +
+  geom_ref_line(h = 0, colour = "red") +
+  labs(title = "Residui del prezzo per qualità del taglio",
+       x = "Cut", y = "Residuo (log2 del prezzo)") +
+  theme_minimal()
+
+ggplot(diamonds2, aes(x = color, y = lresid)) +
+  geom_boxplot() +
+  geom_ref_line(h = 0, colour = "red") +
+  labs(title = "Residui del prezzo per colore",
+       x = "Color", y = "Residuo (log2 del prezzo)") +
+  theme_minimal()
+
+ggplot(diamonds2, aes(x = clarity, y = lresid)) +
+  geom_boxplot() +
+  geom_ref_line(h = 0, colour = "red") +
+  labs(title = "Residui del prezzo per clarity",
+       x = "Clarity", y = "Residuo (log2 del prezzo)") +
+  theme_minimal()
+```
+
+Possiamo notare che a parità di carato la relazione si ribalta: cut, colore e clarity migliori hanno residui più alti, cioè prezzi più alti,dunque confermiamo che il paradosso era dovuto al carato.
+
+### Correlazioni:
+
+Vediamo che risultati otteniamo dai coefficienti di correlazione:
+
+```{r}
+#coefficiente di pearson
+cor_raw = cor(diamonds2$carat, diamonds2$price)
+cor_spear = cor(diamonds2$carat, diamonds2$price, method = "spearman")
+cor_log = cor(diamonds2$lcarat,diamonds2$lprice)
+r2 = summary(mod_carat)$r.squared
+
+df = data.frame(
+  indice = c("Pearson (carat, price)", "Spearman (carat, price)", "Pearson(log carat, log price)", "R^2 modello log-log"),
+  valore = round(c(cor_raw, cor_spear, cor_log, r2), 3)
+)
+
+df
+```
+
+Su questi valori possiamo fare delle osservazioni:
+
+- Sulla scala originale Il coefficiente di Spearman è più alto di quello di Pearson perchè la relazione è molto forte ma non lineare in quanto Spearman misura la monotonia (al crescere del carato il prezzo cresce sempre) mentre pearson misura solo la linearità, che qui è imperfetta.
+- Il coeffiente di Pearson sulla scala logaritmica è maggiore della stessa statistica sulla scala originale, confermando quindi che la trasformazione logaritmica che abbiamo applicato linearizza la relazione, come abbiamo visto nel grafico.
+- Il coefficiente $R^2$ ci indica che circa il 93% della variabilità del log-prezzo è spiegata dal solo carato.
+
+
+### Conclusioni:
+
+
+Inizialmente, considerando una variabile alla volta, la qualità peggiore sembra associata a un prezzo più alto, il che sembra paradossale.
+Abbiamo scoperto che il carato è il principale determinante del prezzo ed è correlato negativamente con la qualità, perché i diamanti grandi tendono ad avere cut, colore e clarity peggiori. Il carato è quindi una variabile confondente.
+Infine modellando il prezzo in funzione del carato e osservando i residui, l'effetto della qualità ha il segno atteso: a parità delle altre caratteristiche, i diamanti di qualità migliore costano di più.
+
+
